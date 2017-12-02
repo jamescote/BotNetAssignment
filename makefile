@@ -17,4 +17,4 @@ connection.o:  connection.cpp connection.h
 	$(CC) $(CFLAGS) -c connection.cpp
 
 clean:
-	$(RM) bot controller *.o *~
+	$(RM) bot conbot *.o *~

